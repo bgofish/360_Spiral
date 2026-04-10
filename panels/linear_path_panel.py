@@ -9,7 +9,7 @@ from typing import Optional, List, Dict, Any
 
 import numpy as np
 import lichtfeld as lf
-from lfs_plugins.types import Panel
+from lfs_plugins.types import Panel, PanelSpace
 
 from ..core.linear_path import LinearPath, LineSegment, OrbitSegment, HelixSegment, compute_linear_camera_position
 from ..core.recorder import RecordingSettings, get_default_output_path, record_linear_video, record_linear_frames_to_folder
