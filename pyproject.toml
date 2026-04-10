@@ -3,7 +3,7 @@
 
 [project]
 name = "360_Spiral"
-version = "3.0.0"
+version = "2.0.0"
 description = "Record camera path videos - mix linear and orbital segments in one path"
 author = "Jacob van Beets"
 min_lichtfeld_version = "0.5.0"
@@ -14,5 +14,8 @@ dependencies = [
 ]
 
 [tool.lichtfeld]
+plugin_api = "1.0"
+lichtfeld_version = "0.5.0"
+required_features = []
 auto_start = true
 hot_reload = true

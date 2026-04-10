@@ -15,18 +15,13 @@ class LineSegment:
     Attributes:
         start_point: Starting position (x, y, z)
         end_point: Ending position (x, y, z)
-        look_mode: "forward" to look along travel direction, "poi" to look at a point,
-                   "angled" to look at an offset angle from forward
+        look_mode: "forward" to look along travel direction, "poi" to look at a point
         poi: Point of interest when look_mode="poi"
-        look_angle_h: Horizontal angle offset in degrees (negative=left, positive=right)
-        look_angle_v: Vertical angle offset in degrees (negative=down, positive=up)
     """
     start_point: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     end_point: Tuple[float, float, float] = (1.0, 0.0, 0.0)
-    look_mode: str = "forward"  # "forward", "poi", or "angled"
+    look_mode: str = "forward"  # "forward" or "poi"
     poi: Optional[Tuple[float, float, float]] = None
-    look_angle_h: float = 0.0  # Horizontal offset in degrees (yaw: -=left, +=right)
-    look_angle_v: float = 0.0  # Vertical offset in degrees (pitch: -=down, +=up)
     segment_type: str = "linear"  # Always "linear" for LineSegment
     
     def get_length(self) -> float:
@@ -189,8 +184,108 @@ class OrbitSegment:
         return (0.0, 0.0, 1.0)
 
 
+@dataclass
+class HelixSegment:
+    """A helical (spiral) camera path around a centre point.
+
+    The helix rises (or descends) along the orbit axis while orbiting, so
+    the camera sweeps a full 3-D corkscrew path.  The camera always looks
+    inward at the vertical centreline at the camera's current height, with
+    an optional offset so you can tilt the gaze slightly above or below.
+
+    Attributes:
+        centre:          XYZ centre of the helix column
+        start_radius:    Orbit radius at the beginning of the path
+        end_radius:      Orbit radius at the end of the path
+        start_height:    Height offset (along orbit_axis) at the start
+        end_height:      Height offset (along orbit_axis) at the end
+        loops:           Number of full rotations over the whole path
+        duration:        Time in seconds for the full helix path
+        orbit_axis:      Axis that defines "up" for the helix ('z','y','x')
+        clockwise:       True = clockwise when viewed from +axis
+        follow_y:        If True the look-target height tracks the camera
+        y_offset:        Added to the look-target height when follow_y=True
+    """
+    centre: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    start_radius: float = 8.0
+    end_radius: float = 8.0
+    start_height: float = 0.0
+    end_height: float = 10.0
+    loops: float = 2.0
+    duration: float = 30.0
+    orbit_axis: str = "z"
+    clockwise: bool = True
+    follow_y: bool = False
+    y_offset: float = 0.0
+    segment_type: str = "helix"
+
+    def _angle_sign(self) -> float:
+        return -1.0 if self.clockwise else 1.0
+
+    def _compute_position(self, t: float) -> Tuple[float, float, float]:
+        t = max(0.0, min(1.0, t))
+        r = self.start_radius + (self.end_radius - self.start_radius) * t
+        h = self.start_height + (self.end_height - self.start_height) * t
+        angle = self._angle_sign() * 2.0 * math.pi * self.loops * t
+        cx, cy, cz = self.centre
+        if self.orbit_axis == "z":
+            return (cx + r * math.sin(angle), cy + r * math.cos(angle), cz + h)
+        elif self.orbit_axis == "y":
+            return (cx + r * math.sin(angle), cy + h, cz + r * math.cos(angle))
+        else:  # x
+            return (cx + h, cy + r * math.sin(angle), cz + r * math.cos(angle))
+
+    def _look_target(self, t: float) -> Tuple[float, float, float]:
+        t = max(0.0, min(1.0, t))
+        h = self.start_height + (self.end_height - self.start_height) * t
+        cx, cy, cz = self.centre
+        if self.follow_y:
+            tgt_h = h + self.y_offset
+        else:
+            tgt_h = (self.start_height + self.end_height) * 0.5
+
+        if self.orbit_axis == "z":
+            return (cx, cy, cz + tgt_h)
+        elif self.orbit_axis == "y":
+            return (cx, cy + tgt_h, cz)
+        else:
+            return (cx + tgt_h, cy, cz)
+
+    def get_length(self) -> float:
+        samples = 64
+        total = 0.0
+        prev = np.array(self._compute_position(0.0))
+        for i in range(1, samples + 1):
+            curr = np.array(self._compute_position(i / samples))
+            total += float(np.linalg.norm(curr - prev))
+            prev = curr
+        return total
+
+    def get_duration(self, speed: float = None) -> float:
+        return self.duration
+
+    def get_start_point(self) -> Tuple[float, float, float]:
+        return self._compute_position(0.0)
+
+    def get_end_point(self) -> Tuple[float, float, float]:
+        return self._compute_position(1.0)
+
+    def get_position_at(self, t: float) -> Tuple[float, float, float]:
+        return self._compute_position(t)
+
+    def get_look_at(self, t: float = 0.5) -> Tuple[float, float, float]:
+        return self._look_target(t)
+
+    def get_up_vector(self) -> Tuple[float, float, float]:
+        if self.orbit_axis == "z":
+            return (0.0, 0.0, 1.0)
+        elif self.orbit_axis == "y":
+            return (0.0, 1.0, 0.0)
+        return (1.0, 0.0, 0.0)
+
+
 # Union type for segments
-Segment = LineSegment | OrbitSegment
+Segment = LineSegment | OrbitSegment | HelixSegment
 
 
 def _catmull_rom(p0: np.ndarray, p1: np.ndarray, p2: np.ndarray, p3: np.ndarray, t: float) -> np.ndarray:
@@ -488,6 +583,10 @@ class LinearPath:
         # Orbit segments handle their own position calculation
         if isinstance(segment, OrbitSegment):
             return segment.get_position_at(local_t)
+
+        # Helix segments handle their own position calculation
+        if isinstance(segment, HelixSegment):
+            return segment.get_position_at(local_t)
         
         # Linear segment
         p1 = np.array(segment.get_start_point())
@@ -529,24 +628,6 @@ class LinearPath:
         result = base_pos + elevation_offset
         return tuple(result)
     
-    def _rotate_vector_around_axis(self, vec: np.ndarray, axis: np.ndarray, angle_deg: float) -> np.ndarray:
-        """Rotate a vector around an axis by the given angle (Rodrigues' rotation formula).
-        
-        Args:
-            vec: Vector to rotate
-            axis: Axis to rotate around (must be normalized)
-            angle_deg: Angle in degrees
-            
-        Returns:
-            Rotated vector
-        """
-        angle_rad = math.radians(angle_deg)
-        cos_a = math.cos(angle_rad)
-        sin_a = math.sin(angle_rad)
-        
-        # Rodrigues' rotation formula: v_rot = v*cos(a) + (k x v)*sin(a) + k*(k.v)*(1-cos(a))
-        return vec * cos_a + np.cross(axis, vec) * sin_a + axis * np.dot(axis, vec) * (1 - cos_a)
-    
     def _get_segment_look_direction(self, seg_idx: int, pos: np.ndarray, local_t: float = 0.5) -> np.ndarray:
         """Get the look direction for a segment.
         
@@ -566,41 +647,11 @@ class LinearPath:
         # Orbit segments always look at POI
         if isinstance(segment, OrbitSegment):
             direction = np.array(segment.poi) - pos
+        elif isinstance(segment, HelixSegment):
+            direction = np.array(segment.get_look_at(local_t)) - pos
         elif hasattr(segment, 'look_mode') and segment.look_mode == "poi" and segment.poi is not None:
             # Linear segment with POI look mode
             direction = np.array(segment.poi) - pos
-        elif hasattr(segment, 'look_mode') and segment.look_mode == "angled":
-            # Linear segment with angled look mode - rotate forward direction by h/v angles
-            forward = np.array(segment.get_direction())
-            
-            # Get world up vector
-            world_up = self._get_world_up()
-            
-            # Compute right vector (perpendicular to forward and up)
-            right = np.cross(forward, world_up)
-            right_norm = np.linalg.norm(right)
-            if right_norm < 1e-6:
-                # Forward is parallel to up, use alternate
-                right = np.array([1.0, 0.0, 0.0]) if abs(forward[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-            else:
-                right = right / right_norm
-            
-            # Recompute proper up vector
-            up = np.cross(right, forward)
-            up = up / (np.linalg.norm(up) + 1e-8)
-            
-            # Get angle offsets
-            angle_h = getattr(segment, 'look_angle_h', 0.0)
-            angle_v = getattr(segment, 'look_angle_v', 0.0)
-            
-            # Rotate forward by horizontal angle (yaw) around up axis (negate so positive = right)
-            direction = self._rotate_vector_around_axis(forward, up, -angle_h)
-            
-            # Also rotate the right axis by the same horizontal angle
-            rotated_right = self._rotate_vector_around_axis(right, up, -angle_h)
-            
-            # Rotate by vertical angle (pitch) around the rotated right axis
-            direction = self._rotate_vector_around_axis(direction, rotated_right, angle_v)
         else:
             # Linear segment looking forward
             direction = np.array(segment.get_direction())
@@ -651,6 +702,10 @@ class LinearPath:
         # Orbit segments always look at POI
         if isinstance(segment, OrbitSegment):
             return segment.poi
+
+        # Helix segments compute their own look target
+        if isinstance(segment, HelixSegment):
+            return segment.get_look_at(local_t)
         
         # Check previous/next segment types
         prev_is_linear = self._is_linear_segment(idx - 1)
@@ -731,6 +786,10 @@ class LinearPath:
         
         # Orbit segments use their own up vector
         if isinstance(segment, OrbitSegment):
+            return segment.get_up_vector()
+
+        # Helix segments use their own up vector
+        if isinstance(segment, HelixSegment):
             return segment.get_up_vector()
         
         # Linear segments compute up from forward direction

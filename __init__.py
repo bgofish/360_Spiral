@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2025 LichtFeld Studio Authors
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""360 Record Plugin for LichtFeld Studio.
+"""360 Spiral Plugin for LichtFeld Studio.
 
 Record camera path videos with linear and orbital segments.
 """
@@ -18,14 +18,14 @@ def on_load():
     """Called when plugin loads."""
     for cls in _classes:
         lf.register_class(cls)
-    lf.log.info("360 Record plugin loaded")
+    lf.log.info("360 Spiral plugin loaded")
 
 
 def on_unload():
     """Called when plugin unloads."""
     for cls in reversed(_classes):
         lf.unregister_class(cls)
-    lf.log.info("360 Record plugin unloaded")
+    lf.log.info("360 Spiral plugin unloaded")
 
 
 __all__ = [

@@ -9,8 +9,9 @@ from typing import Optional, List, Dict, Any
 
 import numpy as np
 import lichtfeld as lf
+from lfs_plugins.types import Panel
 
-from ..core.linear_path import LinearPath, LineSegment, OrbitSegment, compute_linear_camera_position
+from ..core.linear_path import LinearPath, LineSegment, OrbitSegment, HelixSegment, compute_linear_camera_position
 from ..core.recorder import RecordingSettings, get_default_output_path, record_linear_video, record_linear_frames_to_folder
 from ..operators.point_picker import set_point_callback, clear_point_callback, was_point_cancelled
 from ..operators.path_preview import start_preview, stop_preview, is_preview_active, get_preview_progress
@@ -76,6 +77,7 @@ def _linear_path_draw_handler(ctx):
     end_color = (1.0, 0.4, 0.2, 1.0)
     poi_color = (1.0, 0.2, 0.8, 1.0)
     orbit_color = (0.8, 0.4, 1.0, 0.8)
+    helix_color = (0.4, 1.0, 0.6, 0.85)
     transition_color = (0.5, 0.5, 1.0, 0.5)
     
     # Cache for orbit data to avoid recreating objects
@@ -140,6 +142,67 @@ def _linear_path_draw_handler(ctx):
                 
                 # Draw radius line
                 ctx.draw_line_3d(poi, orbit_data['start'], (poi_color[0], poi_color[1], poi_color[2], 0.3), 1.0)
+        
+        elif seg_type == 'helix':
+            centre = seg_data.get('centre')
+            if centre:
+                # Draw centre axis spine (from start_height to end_height)
+                axis = seg_data.get('orbit_axis', 'z')
+                sh = seg_data.get('start_height', 0.0)
+                eh = seg_data.get('end_height', 10.0)
+                cx, cy, cz = centre
+                if axis == 'z':
+                    axis_start = (cx, cy, cz + sh)
+                    axis_end   = (cx, cy, cz + eh)
+                elif axis == 'y':
+                    axis_start = (cx, cy + sh, cz)
+                    axis_end   = (cx, cy + eh, cz)
+                else:
+                    axis_start = (cx + sh, cy, cz)
+                    axis_end   = (cx + eh, cy, cz)
+
+                ctx.draw_line_3d(axis_start, axis_end,
+                                 (helix_color[0], helix_color[1], helix_color[2], 0.35), 1.5)
+                ctx.draw_point_3d(centre, (0.4, 1.0, 0.6, 0.9), 18.0)
+                screen_c = ctx.world_to_screen(centre)
+                if screen_c:
+                    ctx.draw_text_2d((screen_c[0] + 10, screen_c[1] - 8), f"H{i+1}", helix_color)
+
+                # Build helix sample points
+                num_pts = max(48, int(abs(seg_data.get('loops', 2.0)) * 24))
+                import math as _hmath
+                clockwise = seg_data.get('clockwise', True)
+                angle_sign = -1.0 if clockwise else 1.0
+                sr = seg_data.get('start_radius', 8.0)
+                er = seg_data.get('end_radius', 8.0)
+                loops = seg_data.get('loops', 2.0)
+                helix_pts = []
+                for k in range(num_pts + 1):
+                    t = k / num_pts
+                    r = sr + (er - sr) * t
+                    h = sh + (eh - sh) * t
+                    ang = angle_sign * 2.0 * _hmath.pi * loops * t
+                    if axis == 'z':
+                        helix_pts.append((cx + r * _hmath.sin(ang),
+                                          cy + r * _hmath.cos(ang),
+                                          cz + h))
+                    elif axis == 'y':
+                        helix_pts.append((cx + r * _hmath.sin(ang),
+                                          cy + h,
+                                          cz + r * _hmath.cos(ang)))
+                    else:
+                        helix_pts.append((cx + h,
+                                          cy + r * _hmath.sin(ang),
+                                          cz + r * _hmath.cos(ang)))
+
+                arc_color = (1.0, 1.0, 0.0, 0.5 + highlight_alpha * 0.5) if is_highlighted else helix_color
+                arc_width = 2.5 + (3.0 * highlight_alpha) if is_highlighted else 2.5
+                for k in range(len(helix_pts) - 1):
+                    ctx.draw_line_3d(helix_pts[k], helix_pts[k + 1], arc_color, arc_width)
+
+                # Start / end markers
+                ctx.draw_point_3d(helix_pts[0], start_color, 16.0)
+                ctx.draw_point_3d(helix_pts[-1], end_color, 16.0)
         else:
             start = seg_data.get('start')
             end = seg_data.get('end')
@@ -179,14 +242,33 @@ def _linear_path_draw_handler(ctx):
                 if start and end:
                     mid = ((start[0] + end[0]) / 2, (start[1] + end[1]) / 2, (start[2] + end[2]) / 2)
                     ctx.draw_line_3d(mid, poi, (poi_color[0], poi_color[1], poi_color[2], 0.4), 1.0)
-            
-            # Note: Angled look direction is drawn from the smooth camera path below
         
         # Draw transition to next segment
         if i < len(segments) - 1:
             if seg_type == 'orbit':
                 orbit_data = get_orbit_data(i, seg_data)
                 curr_end = orbit_data['end'] if orbit_data else None
+            elif seg_type == 'helix':
+                centre = seg_data.get('centre')
+                if centre:
+                    import math as _hm2
+                    sr = seg_data.get('start_radius', 8.0)
+                    er = seg_data.get('end_radius', 8.0)
+                    sh = seg_data.get('start_height', 0.0)
+                    eh = seg_data.get('end_height', 10.0)
+                    loops = seg_data.get('loops', 2.0)
+                    clockwise = seg_data.get('clockwise', True)
+                    axis = seg_data.get('orbit_axis', 'z')
+                    ang = (-1.0 if clockwise else 1.0) * 2.0 * _hm2.pi * loops
+                    cx, cy, cz = centre
+                    if axis == 'z':
+                        curr_end = (cx + er * _hm2.sin(ang), cy + er * _hm2.cos(ang), cz + eh)
+                    elif axis == 'y':
+                        curr_end = (cx + er * _hm2.sin(ang), cy + eh, cz + er * _hm2.cos(ang))
+                    else:
+                        curr_end = (cx + eh, cy + er * _hm2.sin(ang), cz + er * _hm2.cos(ang))
+                else:
+                    curr_end = None
             else:
                 curr_end = seg_data.get('end')
             
@@ -194,6 +276,16 @@ def _linear_path_draw_handler(ctx):
             if next_seg.get('type') == 'orbit':
                 next_orbit_data = get_orbit_data(i + 1, next_seg)
                 next_start = next_orbit_data['start'] if next_orbit_data else None
+            elif next_seg.get('type') == 'helix':
+                next_centre = next_seg.get('centre')
+                if next_centre:
+                    next_start = (
+                        next_centre[0] + next_seg.get('start_radius', 8.0) * _hm2.sin(0),
+                        next_centre[1] + next_seg.get('start_radius', 8.0) * _hm2.cos(0),
+                        next_centre[2] + next_seg.get('start_height', 0.0)
+                    )
+                else:
+                    next_start = None
             else:
                 next_start = next_seg.get('start')
             
@@ -230,14 +322,26 @@ def _linear_path_draw_handler(ctx):
                 duration=seg_data.get('duration', 30.0),
                 invert_direction=seg_data.get('invert_direction', False)
             ))
+        elif seg_type == 'helix' and seg_data.get('centre'):
+            path.segments.append(HelixSegment(
+                centre=seg_data['centre'],
+                start_radius=seg_data.get('start_radius', 8.0),
+                end_radius=seg_data.get('end_radius', 8.0),
+                start_height=seg_data.get('start_height', 0.0),
+                end_height=seg_data.get('end_height', 10.0),
+                loops=seg_data.get('loops', 2.0),
+                duration=seg_data.get('duration', 30.0),
+                orbit_axis=seg_data.get('orbit_axis', 'z'),
+                clockwise=seg_data.get('clockwise', True),
+                follow_y=seg_data.get('follow_y', False),
+                y_offset=seg_data.get('y_offset', 0.0),
+            ))
         elif seg_data.get('start') and seg_data.get('end'):
             path.segments.append(LineSegment(
                 start_point=seg_data['start'],
                 end_point=seg_data['end'],
                 look_mode=seg_data.get('look_mode', 'forward'),
-                poi=seg_data.get('poi'),
-                look_angle_h=seg_data.get('look_angle_h', 0.0),
-                look_angle_v=seg_data.get('look_angle_v', 0.0)
+                poi=seg_data.get('poi')
             ))
     
     if path.segments:
@@ -252,119 +356,6 @@ def _linear_path_draw_handler(ctx):
                 if prev_pos is not None:
                     ctx.draw_line_3d(prev_pos, pos, smooth_color, 1.5)
                 prev_pos = pos
-            
-            # Draw angled look direction indicators from actual camera path
-            for seg_idx, seg_data in enumerate(segments):
-                if seg_data.get('type', 'linear') == 'linear' and seg_data.get('look_mode') == 'angled':
-                    angle_h = seg_data.get('look_angle_h', 0.0)
-                    angle_v = seg_data.get('look_angle_v', 0.0)
-                    start = seg_data.get('start')
-                    end = seg_data.get('end')
-                    
-                    if start and end:
-                        # Get segment length for line scaling
-                        dx = end[0] - start[0]
-                        dy = end[1] - start[1]
-                        dz = end[2] - start[2]
-                        seg_length = _math.sqrt(dx*dx + dy*dy + dz*dz)
-                        
-                        # Sample a point in the middle of this segment's time
-                        # Find approximate time for this segment
-                        seg_start_t = 0.0
-                        for j in range(seg_idx):
-                            s = segments[j]
-                            if s.get('type') == 'orbit' and s.get('poi'):
-                                seg_start_t += s.get('duration', 30.0)
-                            elif s.get('start') and s.get('end'):
-                                sx, sy, sz = s['start']
-                                ex, ey, ez = s['end']
-                                seg_start_t += _math.sqrt((ex-sx)**2 + (ey-sy)**2 + (ez-sz)**2) / speed
-                        
-                        seg_dur = seg_length / speed
-                        mid_t = seg_start_t + seg_dur * 0.5
-                        
-                        if mid_t <= total_dur:
-                            # Get actual camera position on smooth path
-                            cam_pos = path.get_camera_position(mid_t)
-                            
-                            # Compute forward direction from segment
-                            forward = (dx/seg_length, dy/seg_length, dz/seg_length) if seg_length > 1e-6 else (1,0,0)
-                            
-                            # Get up vector
-                            if up_axis == 'z':
-                                world_up = (0.0, 0.0, 1.0)
-                            elif up_axis == 'y':
-                                world_up = (0.0, 1.0, 0.0)
-                            else:
-                                world_up = (1.0, 0.0, 0.0)
-                            
-                            # Compute right vector (cross product)
-                            right = (
-                                forward[1] * world_up[2] - forward[2] * world_up[1],
-                                forward[2] * world_up[0] - forward[0] * world_up[2],
-                                forward[0] * world_up[1] - forward[1] * world_up[0]
-                            )
-                            right_len = _math.sqrt(right[0]**2 + right[1]**2 + right[2]**2)
-                            if right_len > 1e-6:
-                                right = (right[0]/right_len, right[1]/right_len, right[2]/right_len)
-                                
-                                # Compute proper up
-                                up_vec = (
-                                    right[1] * forward[2] - right[2] * forward[1],
-                                    right[2] * forward[0] - right[0] * forward[2],
-                                    right[0] * forward[1] - right[1] * forward[0]
-                                )
-                                
-                                # Rotate forward by angles
-                                angle_h_rad = _math.radians(angle_h)
-                                angle_v_rad = _math.radians(angle_v)
-                                
-                                # Horizontal rotation around up axis
-                                cos_h = _math.cos(angle_h_rad)
-                                sin_h = _math.sin(angle_h_rad)
-                                look_dir = (
-                                    forward[0] * cos_h + right[0] * sin_h,
-                                    forward[1] * cos_h + right[1] * sin_h,
-                                    forward[2] * cos_h + right[2] * sin_h
-                                )
-                                
-                                # Also rotate right axis by horizontal angle
-                                rotated_right = (
-                                    right[0] * cos_h + forward[0] * (-sin_h),
-                                    right[1] * cos_h + forward[1] * (-sin_h),
-                                    right[2] * cos_h + forward[2] * (-sin_h)
-                                )
-                                
-                                # Vertical rotation around the rotated right axis
-                                # Using Rodrigues' formula: v' = v*cos + (axis x v)*sin + axis*(axis.v)*(1-cos)
-                                cos_v = _math.cos(angle_v_rad)
-                                sin_v = _math.sin(angle_v_rad)
-                                # Cross product: rotated_right x look_dir
-                                cross = (
-                                    rotated_right[1] * look_dir[2] - rotated_right[2] * look_dir[1],
-                                    rotated_right[2] * look_dir[0] - rotated_right[0] * look_dir[2],
-                                    rotated_right[0] * look_dir[1] - rotated_right[1] * look_dir[0]
-                                )
-                                # Dot product: rotated_right . look_dir
-                                dot = rotated_right[0]*look_dir[0] + rotated_right[1]*look_dir[1] + rotated_right[2]*look_dir[2]
-                                look_dir = (
-                                    look_dir[0] * cos_v + cross[0] * sin_v + rotated_right[0] * dot * (1 - cos_v),
-                                    look_dir[1] * cos_v + cross[1] * sin_v + rotated_right[1] * dot * (1 - cos_v),
-                                    look_dir[2] * cos_v + cross[2] * sin_v + rotated_right[2] * dot * (1 - cos_v)
-                                )
-                                
-                                # Draw look direction line from camera position
-                                line_length = max(seg_length * 0.5, 3.0)
-                                look_end = (
-                                    cam_pos[0] + look_dir[0] * line_length,
-                                    cam_pos[1] + look_dir[1] * line_length,
-                                    cam_pos[2] + look_dir[2] * line_length
-                                )
-                                
-                                # Yellow line for look direction
-                                look_color = (1.0, 0.9, 0.2, 0.9)
-                                ctx.draw_line_3d(cam_pos, look_end, look_color, 2.5)
-                                ctx.draw_point_3d(look_end, look_color, 10.0)
 
 
 def _ensure_linear_draw_handler():
@@ -379,12 +370,11 @@ def _ensure_linear_draw_handler():
         _linear_draw_handler_registered = True
 
 
-class LinearPathPanel(lf.ui.Panel):
+class LinearPathPanel(Panel):
     """Panel for configuring and recording camera path videos (linear + orbit segments)."""
     
-    id = "360_record.linear_path_panel"
     label = "Camera Path"
-    space = lf.ui.PanelSpace.MAIN_PANEL_TAB
+    space = "MAIN_PANEL_TAB"
     order = 30
     
     RESOLUTION_ITEMS = [
@@ -397,7 +387,6 @@ class LinearPathPanel(lf.ui.Panel):
     
     LOOK_MODE_ITEMS = [
         ("forward", "Look Forward"),
-        ("angled", "Look Angled"),
         ("poi", "Look at POI"),
     ]
     
@@ -416,6 +405,12 @@ class LinearPathPanel(lf.ui.Panel):
         ("z", "Z-Axis"),
         ("y", "Y-Axis"),
         ("x", "X-Axis"),
+    ]
+
+    HELIX_AXIS_ITEMS = [
+        ("z", "Z-Axis (up)"),
+        ("y", "Y-Axis (up)"),
+        ("x", "X-Axis (up)"),
     ]
     
     # Walking speed in meters/second (average ~1.4 m/s)
@@ -493,7 +488,11 @@ class LinearPathPanel(lf.ui.Panel):
                             next_seg['start'] = _pending_point
                             
                 elif point_type == "poi":
-                    current_seg['poi'] = _pending_point
+                    # Helix segments store their centre under 'centre' key
+                    if current_seg.get('type') == 'helix':
+                        current_seg['centre'] = _pending_point
+                    else:
+                        current_seg['poi'] = _pending_point
                 
                 self._status_msg = f"Point set: ({_pending_point[0]:.2f}, {_pending_point[1]:.2f}, {_pending_point[2]:.2f})"
                 self._status_is_error = False
@@ -519,7 +518,7 @@ class LinearPathPanel(lf.ui.Panel):
         self._status_is_error = False
         
         set_point_callback(_on_point_picked, point_type)
-        op_id = "lfs_plugins.360_record.operators.point_picker.LINEARPATH_OT_pick_point"
+        op_id = "lfs_plugins.360_Spiral.operators.point_picker.LINEARPATH_OT_pick_point"
         lf.ui.ops.invoke(op_id)
         lf.ui.request_redraw()
     
@@ -537,7 +536,7 @@ class LinearPathPanel(lf.ui.Panel):
         """Add a new segment.
         
         Args:
-            segment_type: "linear" or "orbit"
+            segment_type: "linear", "orbit", or "helix"
         """
         if segment_type == "orbit":
             new_segment = {
@@ -550,6 +549,21 @@ class LinearPathPanel(lf.ui.Panel):
                 'arc_degrees': 360.0,
                 'duration': 30.0,
                 'invert_direction': False,
+            }
+        elif segment_type == "helix":
+            new_segment = {
+                'type': 'helix',
+                'centre': None,
+                'start_radius': 8.0,
+                'end_radius': 8.0,
+                'start_height': 0.0,
+                'end_height': 10.0,
+                'loops': 2.0,
+                'duration': 30.0,
+                'orbit_axis': 'z',
+                'clockwise': True,
+                'follow_y': False,
+                'y_offset': 0.0,
             }
         else:
             new_segment = {
@@ -574,6 +588,18 @@ class LinearPathPanel(lf.ui.Panel):
                         invert_direction=prev_seg.get('invert_direction', False)
                     )
                     new_segment['start'] = orbit.get_end_point()
+                elif prev_seg.get('type') == 'helix' and prev_seg.get('centre'):
+                    helix = HelixSegment(
+                        centre=prev_seg['centre'],
+                        start_radius=prev_seg.get('start_radius', 8.0),
+                        end_radius=prev_seg.get('end_radius', 8.0),
+                        start_height=prev_seg.get('start_height', 0.0),
+                        end_height=prev_seg.get('end_height', 10.0),
+                        loops=prev_seg.get('loops', 2.0),
+                        orbit_axis=prev_seg.get('orbit_axis', 'z'),
+                        clockwise=prev_seg.get('clockwise', True),
+                    )
+                    new_segment['start'] = helix.get_end_point()
                 elif prev_seg.get('end'):
                     new_segment['start'] = prev_seg['end']
         
@@ -605,6 +631,18 @@ class LinearPathPanel(lf.ui.Panel):
                     invert_direction=prev_seg.get('invert_direction', False)
                 )
                 connect_point = orbit.get_end_point()
+            elif prev_seg.get('type') == 'helix' and prev_seg.get('centre'):
+                helix = HelixSegment(
+                    centre=prev_seg['centre'],
+                    start_radius=prev_seg.get('start_radius', 8.0),
+                    end_radius=prev_seg.get('end_radius', 8.0),
+                    start_height=prev_seg.get('start_height', 0.0),
+                    end_height=prev_seg.get('end_height', 10.0),
+                    loops=prev_seg.get('loops', 2.0),
+                    orbit_axis=prev_seg.get('orbit_axis', 'z'),
+                    clockwise=prev_seg.get('clockwise', True),
+                )
+                connect_point = helix.get_end_point()
             else:
                 connect_point = prev_seg.get('end')
             
@@ -942,6 +980,25 @@ class LinearPathPanel(lf.ui.Panel):
                         invert_direction=seg_data.get('invert_direction', False)
                     )
                     path.segments.append(segment)
+            
+            elif seg_type == 'helix':
+                # Helix segment - needs centre
+                if seg_data.get('centre'):
+                    segment = HelixSegment(
+                        centre=seg_data['centre'],
+                        start_radius=seg_data.get('start_radius', 8.0),
+                        end_radius=seg_data.get('end_radius', 8.0),
+                        start_height=seg_data.get('start_height', 0.0),
+                        end_height=seg_data.get('end_height', 10.0),
+                        loops=seg_data.get('loops', 2.0),
+                        duration=seg_data.get('duration', 30.0),
+                        orbit_axis=seg_data.get('orbit_axis', 'z'),
+                        clockwise=seg_data.get('clockwise', True),
+                        follow_y=seg_data.get('follow_y', False),
+                        y_offset=seg_data.get('y_offset', 0.0),
+                    )
+                    path.segments.append(segment)
+            
             else:
                 # Linear segment - needs start and end
                 if seg_data.get('start') and seg_data.get('end'):
@@ -949,9 +1006,7 @@ class LinearPathPanel(lf.ui.Panel):
                         start_point=seg_data['start'],
                         end_point=seg_data['end'],
                         look_mode=seg_data.get('look_mode', 'forward'),
-                        poi=seg_data.get('poi'),
-                        look_angle_h=seg_data.get('look_angle_h', 0.0),
-                        look_angle_v=seg_data.get('look_angle_v', 0.0)
+                        poi=seg_data.get('poi')
                     )
                     path.segments.append(segment)
         
@@ -1059,14 +1114,12 @@ class LinearPathPanel(lf.ui.Panel):
         self._update_draw_state()
         
         # === Segments Section ===
-        layout.push_id("path_segments")
         if layout.collapsing_header("Path Segments", default_open=True):
             if not self._segments:
                 layout.text_colored("No segments. Add a Linear or Orbit segment to start.", theme.palette.text_dim)
             
             # Draw each segment
             for i, seg_data in enumerate(self._segments):
-                layout.push_id(f"seg_{i}")
                 is_expanded = self._expanded_segments.get(i, True)
                 seg_type = seg_data.get('type', 'linear')
                 
@@ -1074,6 +1127,9 @@ class LinearPathPanel(lf.ui.Panel):
                 if seg_type == 'orbit':
                     is_complete = seg_data.get('poi') is not None
                     type_label = "Orbit"
+                elif seg_type == 'helix':
+                    is_complete = seg_data.get('centre') is not None
+                    type_label = "Helix"
                 else:
                     is_complete = seg_data.get('start') is not None and seg_data.get('end') is not None
                     type_label = "Linear"
@@ -1097,8 +1153,7 @@ class LinearPathPanel(lf.ui.Panel):
                 # Delete button
                 if layout.button(f"Del##{i}_del", (32 * scale, 0)):
                     self._remove_segment(i)
-                    layout.pop_id()
-                    continue
+                    continue  # Skip rest of this segment
                 
                 # Segment details (if expanded)
                 if is_expanded:
@@ -1123,59 +1178,217 @@ class LinearPathPanel(lf.ui.Panel):
                                 self._start_picking(i, "poi")
                         
                         # Orbit Axis
+                        layout.label("Orbit Axis:")
                         orbit_axis_labels = [item[1] for item in self.ORBIT_AXIS_ITEMS]
                         current_axis_idx = 0
                         for idx, item in enumerate(self.ORBIT_AXIS_ITEMS):
                             if item[0] == seg_data.get('orbit_axis', 'z'):
                                 current_axis_idx = idx
                                 break
-                        changed, new_axis_idx = layout.combo(f"Orbit Axis##orbit_axis_{i}", current_axis_idx, orbit_axis_labels)
+                        layout.push_item_width(100 * scale)
+                        changed, new_axis_idx = layout.combo(f"##orbit_axis_{i}", current_axis_idx, orbit_axis_labels)
                         if changed:
                             seg_data['orbit_axis'] = self.ORBIT_AXIS_ITEMS[new_axis_idx][0]
                             self._update_draw_state()
+                        layout.pop_item_width()
                         
                         # Radius
-                        changed, new_radius = layout.drag_float(f"Radius##radius_{i}", seg_data.get('radius', 5.0), 0.1, 0.1, 500.0)
+                        layout.label("Radius:")
+                        layout.push_item_width(-1)
+                        changed, new_radius = layout.drag_float(f"##radius_{i}", seg_data.get('radius', 5.0), 0.1, 0.1, 500.0)
                         if changed:
                             seg_data['radius'] = max(0.1, new_radius)
                             self._update_draw_state()
+                        layout.pop_item_width()
                         if layout.is_item_hovered():
                             layout.set_tooltip("Drag or Ctrl+Click to enter value manually")
                         
                         # Elevation (offset along orbit axis)
-                        changed, new_elev = layout.drag_float(f"Elevation##orb_elev_{i}", seg_data.get('elevation', 1.5), 0.1, -500.0, 500.0)
+                        layout.label("Elevation:")
+                        layout.push_item_width(-1)
+                        changed, new_elev = layout.drag_float(f"##orb_elev_{i}", seg_data.get('elevation', 1.5), 0.1, -500.0, 500.0)
                         if changed:
                             seg_data['elevation'] = new_elev
                             self._update_draw_state()
+                        layout.pop_item_width()
                         if layout.is_item_hovered():
                             layout.set_tooltip("Drag or Ctrl+Click to enter value manually")
                         
                         # Start Angle
-                        changed, new_start = layout.slider_float(f"Start Angle##start_angle_{i}", seg_data.get('start_angle', 0.0), 0.0, 360.0)
+                        layout.label("Start Angle:")
+                        layout.push_item_width(-1)
+                        changed, new_start = layout.slider_float(f"##start_angle_{i}", seg_data.get('start_angle', 0.0), 0.0, 360.0)
                         if changed:
                             seg_data['start_angle'] = new_start
                             self._update_draw_state()
+                        layout.pop_item_width()
                         
                         # Arc Degrees
-                        changed, new_arc = layout.slider_float(f"Arc (deg)##arc_deg_{i}", seg_data.get('arc_degrees', 360.0), -720.0, 720.0)
+                        layout.label("Arc Amount (°):")
+                        layout.push_item_width(-1)
+                        changed, new_arc = layout.slider_float(f"##arc_deg_{i}", seg_data.get('arc_degrees', 360.0), -720.0, 720.0)
                         if changed:
                             seg_data['arc_degrees'] = new_arc
                             self._update_draw_state()
+                        layout.pop_item_width()
                         if layout.is_item_hovered():
                             layout.set_tooltip("Positive = counter-clockwise, Negative = clockwise. 360 = full circle.")
                         
                         # Duration
-                        changed, new_dur = layout.slider_float(f"Duration (s)##duration_{i}", seg_data.get('duration', 30.0), 1.0, 120.0)
+                        layout.label("Duration (s):")
+                        layout.push_item_width(-1)
+                        changed, new_dur = layout.slider_float(f"##duration_{i}", seg_data.get('duration', 30.0), 1.0, 120.0)
                         if changed:
                             seg_data['duration'] = new_dur
                             self._update_draw_state()
+                        layout.pop_item_width()
                         
                         # Invert direction
                         changed, new_invert = layout.checkbox(f"Invert Elevation##{i}_invert", seg_data.get('invert_direction', False))
                         if changed:
                             seg_data['invert_direction'] = new_invert
                             self._update_draw_state()
-                        
+
+                    elif seg_type == 'helix':
+                        # === HELIX SEGMENT UI ===
+
+                        # Centre point (required — picked in viewport)
+                        layout.label("Centre:")
+                        layout.same_line()
+                        layout.text_colored(
+                            self._format_point(seg_data.get('centre')),
+                            (0.4, 1.0, 0.6, 1.0) if seg_data.get('centre') else theme.palette.text_dim
+                        )
+                        layout.same_line()
+                        picking_centre = self._picking and self._pick_target == (i, "poi")
+                        if picking_centre:
+                            if layout.button_styled(f"[Cancel]##{i}_hctr_cancel", "error", (70 * scale, 0)):
+                                self._cancel_picking()
+                        else:
+                            if layout.button(f"Pick##{i}_hctr", (50 * scale, 0)):
+                                self._start_picking(i, "poi")  # poi type → routed to 'centre' in _process_pending_point
+                        if layout.is_item_hovered():
+                            layout.set_tooltip("Click a point in the viewport to set the helix centre column")
+
+                        # Orbit axis
+                        layout.label("Up Axis:")
+                        helix_axis_labels = [item[1] for item in self.HELIX_AXIS_ITEMS]
+                        current_haxis_idx = 0
+                        for idx, item in enumerate(self.HELIX_AXIS_ITEMS):
+                            if item[0] == seg_data.get('orbit_axis', 'z'):
+                                current_haxis_idx = idx
+                                break
+                        layout.push_item_width(130 * scale)
+                        changed, new_haxis_idx = layout.combo(f"##helix_axis_{i}", current_haxis_idx, helix_axis_labels)
+                        if changed:
+                            seg_data['orbit_axis'] = self.HELIX_AXIS_ITEMS[new_haxis_idx][0]
+                            self._update_draw_state()
+                        layout.pop_item_width()
+
+                        # Start / end radius
+                        layout.label("Start Radius:")
+                        layout.push_item_width(-1)
+                        changed, v = layout.drag_float(f"##hx_sr_{i}", seg_data.get('start_radius', 8.0), 0.1, 0.1, 500.0)
+                        if changed:
+                            seg_data['start_radius'] = max(0.1, v)
+                            self._update_draw_state()
+                        layout.pop_item_width()
+                        if layout.is_item_hovered():
+                            layout.set_tooltip("Orbit radius at the start of the helix. Drag or Ctrl+Click to type.")
+
+                        layout.label("End Radius:")
+                        layout.push_item_width(-1)
+                        changed, v = layout.drag_float(f"##hx_er_{i}", seg_data.get('end_radius', 8.0), 0.1, 0.1, 500.0)
+                        if changed:
+                            seg_data['end_radius'] = max(0.1, v)
+                            self._update_draw_state()
+                        layout.pop_item_width()
+                        if layout.is_item_hovered():
+                            layout.set_tooltip("Orbit radius at the end of the helix (set different to start for a cone spiral).")
+
+                        # Start / end height
+                        layout.label("Start Height:")
+                        layout.push_item_width(-1)
+                        changed, v = layout.drag_float(f"##hx_sh_{i}", seg_data.get('start_height', 0.0), 0.1, -500.0, 500.0)
+                        if changed:
+                            seg_data['start_height'] = v
+                            self._update_draw_state()
+                        layout.pop_item_width()
+                        if layout.is_item_hovered():
+                            layout.set_tooltip("Height offset along the up-axis at the start of the helix.")
+
+                        layout.label("End Height:")
+                        layout.push_item_width(-1)
+                        changed, v = layout.drag_float(f"##hx_eh_{i}", seg_data.get('end_height', 10.0), 0.1, -500.0, 500.0)
+                        if changed:
+                            seg_data['end_height'] = v
+                            self._update_draw_state()
+                        layout.pop_item_width()
+                        if layout.is_item_hovered():
+                            layout.set_tooltip("Height offset along the up-axis at the end of the helix.")
+
+                        # Loops
+                        layout.label("Loops:")
+                        layout.push_item_width(-1)
+                        changed, v = layout.slider_float(f"##hx_loops_{i}", seg_data.get('loops', 2.0), 0.25, 20.0)
+                        if changed:
+                            seg_data['loops'] = max(0.25, v)
+                            self._update_draw_state()
+                        layout.pop_item_width()
+                        if layout.is_item_hovered():
+                            layout.set_tooltip("Number of complete rotations from start to end.")
+
+                        # Duration
+                        layout.label("Duration (s):")
+                        layout.push_item_width(-1)
+                        changed, v = layout.slider_float(f"##hx_dur_{i}", seg_data.get('duration', 30.0), 1.0, 300.0)
+                        if changed:
+                            seg_data['duration'] = max(1.0, v)
+                            self._update_draw_state()
+                        layout.pop_item_width()
+
+                        # Clockwise direction
+                        changed, v = layout.checkbox(f"Clockwise##{i}_hx_cw", seg_data.get('clockwise', True))
+                        if changed:
+                            seg_data['clockwise'] = v
+                            self._update_draw_state()
+                        if layout.is_item_hovered():
+                            layout.set_tooltip("Direction of rotation viewed from the positive up-axis.")
+
+                        # Follow-Y target
+                        layout.spacing()
+                        changed, v = layout.checkbox(f"Target follows camera height##{i}_hx_fy", seg_data.get('follow_y', False))
+                        if changed:
+                            seg_data['follow_y'] = v
+                            self._update_draw_state()
+                        if layout.is_item_hovered():
+                            layout.set_tooltip(
+                                "When on, the look-target height tracks the camera's current height "
+                                "as it rises/descends, rather than staying fixed at the mid-point."
+                            )
+
+                        # Y offset — only meaningful when follow_y is on
+                        follow_y_on = seg_data.get('follow_y', False)
+                        layout.label("Height Offset:")
+                        layout.same_line()
+                        layout.push_item_width(120 * scale)
+                        if follow_y_on:
+                            changed, v = layout.drag_float(
+                                f"##hx_yoff_{i}", seg_data.get('y_offset', 0.0), 0.05, -100.0, 100.0, "%.2f"
+                            )
+                            if changed:
+                                seg_data['y_offset'] = v
+                                self._update_draw_state()
+                        else:
+                            # Show greyed-out placeholder when follow_y is off
+                            layout.text_colored("(enable above)", theme.palette.text_dim)
+                        layout.pop_item_width()
+                        if layout.is_item_hovered():
+                            layout.set_tooltip(
+                                "Added to the look-target height when 'Target follows camera height' is on.\n"
+                                "Positive = look above camera level, negative = look below."
+                            )
+                    
                     else:
                         # === LINEAR SEGMENT UI ===
                         
@@ -1221,6 +1434,7 @@ class LinearPathPanel(lf.ui.Panel):
                                 self._start_picking(i, "end")
                         
                         # Look mode
+                        layout.label("Look Mode:")
                         look_mode_labels = [item[1] for item in self.LOOK_MODE_ITEMS]
                         current_look_idx = 0
                         for idx, item in enumerate(self.LOOK_MODE_ITEMS):
@@ -1228,36 +1442,12 @@ class LinearPathPanel(lf.ui.Panel):
                                 current_look_idx = idx
                                 break
                         
-                        changed, new_look_idx = layout.combo(f"Look Mode##look_mode_{i}", current_look_idx, look_mode_labels)
+                        layout.push_item_width(150 * scale)
+                        changed, new_look_idx = layout.combo(f"##look_mode_{i}", current_look_idx, look_mode_labels)
                         if changed:
                             seg_data['look_mode'] = self.LOOK_MODE_ITEMS[new_look_idx][0]
                             self._update_draw_state()
-                        
-                        # Angle controls (only if look_mode is "angled")
-                        if seg_data.get('look_mode') == 'angled':
-                            # Horizontal angle (left/right)
-                            changed, new_angle_h = layout.slider_float(
-                                f"Horizontal (L/R)##look_angle_h_{i}", 
-                                seg_data.get('look_angle_h', 0.0), 
-                                -180.0, 180.0
-                            )
-                            if changed:
-                                seg_data['look_angle_h'] = new_angle_h
-                                self._update_draw_state()
-                            if layout.is_item_hovered():
-                                layout.set_tooltip("Negative = look left, Positive = look right")
-                            
-                            # Vertical angle (up/down)
-                            changed, new_angle_v = layout.slider_float(
-                                f"Vertical (Up/Dn)##look_angle_v_{i}", 
-                                seg_data.get('look_angle_v', 0.0), 
-                                -90.0, 90.0
-                            )
-                            if changed:
-                                seg_data['look_angle_v'] = new_angle_v
-                                self._update_draw_state()
-                            if layout.is_item_hovered():
-                                layout.set_tooltip("Negative = look down, Positive = look up")
+                        layout.pop_item_width()
                         
                         # POI (only if look_mode is "poi")
                         if seg_data.get('look_mode') == 'poi':
@@ -1277,8 +1467,6 @@ class LinearPathPanel(lf.ui.Panel):
                     
                     layout.unindent(15 * scale)
                     layout.spacing()
-                
-                layout.pop_id()
             
             # Add segment buttons
             layout.spacing()
@@ -1288,18 +1476,20 @@ class LinearPathPanel(lf.ui.Panel):
             layout.same_line()
             if layout.button("+ Orbit##add_orbit", (100 * scale, 28 * scale)):
                 self._add_segment("orbit")
+            layout.same_line()
+            if layout.button("+ Helix##add_helix", (100 * scale, 28 * scale)):
+                self._add_segment("helix")
         
         layout.separator()
-        layout.pop_id()
         
         # === Path Settings Section ===
-        layout.push_id("path_settings")
         if layout.collapsing_header("Path Settings", default_open=True):
             btn_w = 45 * scale
             
             # Up Axis (camera level)
+            layout.label("Camera Up Axis:")
             up_axis_labels = [item[1] for item in self.UP_AXIS_ITEMS]
-            changed, self._up_axis_idx = layout.combo("Camera Up Axis##upaxis", self._up_axis_idx, up_axis_labels)
+            changed, self._up_axis_idx = layout.combo("##upaxis", self._up_axis_idx, up_axis_labels)
             if changed:
                 self._update_draw_state()
             if layout.is_item_hovered():
@@ -1308,9 +1498,21 @@ class LinearPathPanel(lf.ui.Panel):
             layout.spacing()
             
             # Elevation offset
-            changed, self._elevation = layout.slider_float("Elevation##elev_slider", self._elevation, 0.0, 50.0)
+            axis_name = self.UP_AXIS_ITEMS[self._up_axis_idx][0].upper()
+            layout.label(f"Elevation (offset along {axis_name}):")
+            
+            layout.push_item_width(-80 * scale)
+            changed, self._elevation = layout.slider_float("##elev_slider", self._elevation, 0.0, 50.0)
             if changed:
                 self._update_draw_state()
+            layout.pop_item_width()
+            layout.same_line()
+            layout.push_item_width(70 * scale)
+            changed, self._elevation = layout.input_float("##elev_input", self._elevation, 0.0, 0.0)
+            if changed:
+                self._elevation = max(0.0, self._elevation)
+                self._update_draw_state()
+            layout.pop_item_width()
             
             # Elevation adjustment buttons
             if layout.button("-0.5##elevsub05", (btn_w, 0)):
@@ -1339,7 +1541,17 @@ class LinearPathPanel(lf.ui.Panel):
             layout.spacing()
             
             # Speed (units per second)
-            changed, self._speed = layout.slider_float("Speed##speed_slider", self._speed, 0.1, 10.0)
+            layout.label("Speed (units/second):")
+            
+            layout.push_item_width(-80 * scale)
+            changed, self._speed = layout.slider_float("##speed_slider", self._speed, 0.1, 10.0)
+            layout.pop_item_width()
+            layout.same_line()
+            layout.push_item_width(70 * scale)
+            changed, self._speed = layout.input_float("##speed_input", self._speed, 0.0, 0.0)
+            if changed:
+                self._speed = max(0.01, self._speed)
+            layout.pop_item_width()
             
             # Speed adjustment buttons + Walking speed
             if layout.button("-0.1##spdsub01", (btn_w, 0)):
@@ -1378,17 +1590,18 @@ class LinearPathPanel(lf.ui.Panel):
             layout.spacing()
             
             # Smooth factor
-            changed, self._smooth_factor = layout.slider_float("Smoothing##smooth", self._smooth_factor, 0.0, 1.0)
+            layout.label("Smoothing:")
+            layout.push_item_width(-1)
+            changed, self._smooth_factor = layout.slider_float("##smooth", self._smooth_factor, 0.0, 1.0)
             if changed:
                 self._update_draw_state()
+            layout.pop_item_width()
             if layout.is_item_hovered():
                 layout.set_tooltip("0 = Sharp corners, 1 = Maximum smoothing at transitions")
         
         layout.separator()
-        layout.pop_id()
         
         # === Preview Section ===
-        layout.push_id("preview")
         if layout.collapsing_header("Preview", default_open=True):
             changed, self._show_preview = layout.checkbox("Show Path Preview##showpreview", self._show_preview)
             if changed:
@@ -1413,6 +1626,8 @@ class LinearPathPanel(lf.ui.Panel):
                 lf.ui.request_redraw()  # Keep updating progress
             else:
                 # Preview speed
+                layout.label("Preview Speed:")
+                layout.same_line()
                 speed_labels = ["0.5x", "1x", "2x", "4x"]
                 speed_values = [0.5, 1.0, 2.0, 4.0]
                 current_speed_idx = 1  # Default 1x
@@ -1421,13 +1636,19 @@ class LinearPathPanel(lf.ui.Panel):
                         current_speed_idx = idx
                         break
                 
-                changed, new_speed_idx = layout.combo("Preview Speed##previewspeed", current_speed_idx, speed_labels)
+                layout.push_item_width(80 * scale)
+                changed, new_speed_idx = layout.combo("##previewspeed", current_speed_idx, speed_labels)
                 if changed:
                     self._preview_speed = speed_values[new_speed_idx]
+                layout.pop_item_width()
                 
                 if can_preview:
                     if layout.button_styled("PREVIEW PATH##startpreview", "secondary", (-1, 32 * scale)):
                         start_preview(path, self._fov, self._preview_speed)
+                    layout.text_colored(
+                        "Note: Requires LFS camera control API (not yet available)",
+                        (1.0, 0.7, 0.3, 0.8)
+                    )
                 else:
                     layout.button("PREVIEW PATH##preview_disabled", (-1, 32 * scale))
                     if not path or len(path.segments) == 0:
@@ -1445,10 +1666,8 @@ class LinearPathPanel(lf.ui.Panel):
                 )
         
         layout.separator()
-        layout.pop_id()
         
         # === Recording Settings Section ===
-        layout.push_id("recording")
         if layout.collapsing_header("Recording Settings", default_open=True):
             # Resolution
             resolution_labels = [item[1] for item in self.RESOLUTION_ITEMS]
@@ -1470,12 +1689,13 @@ class LinearPathPanel(lf.ui.Panel):
             layout.spacing()
             
             # Output path
+            layout.label("Output Path:")
             if not self._output_path:
                 base_path = get_default_output_path()
                 self._output_path = base_path.replace("_360.mp4", "_linear.mp4")
             
             layout.push_item_width(-60 * scale)
-            changed, self._output_path = layout.input_text("Output Path##outpath", self._output_path)
+            changed, self._output_path = layout.input_text("##outpath", self._output_path)
             layout.pop_item_width()
             layout.same_line()
             if layout.button("...##browse", (50 * scale, 0)):
@@ -1505,17 +1725,16 @@ class LinearPathPanel(lf.ui.Panel):
                 )
         
         layout.separator()
-        layout.pop_id()
         
         # === Save/Load Track Section ===
-        layout.push_id("save_load")
         if layout.collapsing_header("Save/Load Track", default_open=False):
             # Track file path
             if not self._track_path:
                 self._track_path = self._get_default_track_path()
             
+            layout.label("Track File:")
             layout.push_item_width(-60 * scale)
-            changed, self._track_path = layout.input_text("Track File##trackpath", self._track_path)
+            changed, self._track_path = layout.input_text("##trackpath", self._track_path)
             layout.pop_item_width()
             layout.same_line()
             if layout.button("...##browsetrack", (50 * scale, 0)):
@@ -1560,10 +1779,8 @@ class LinearPathPanel(lf.ui.Panel):
                 layout.text_colored("Add segments to enable Save", theme.palette.text_dim)
         
         layout.separator()
-        layout.pop_id()
         
         # === Record Button ===
-        layout.push_id("record_section")
         if self._recording:
             # Show progress bar with status
             # progress_bar(fraction, overlay, width, height)
@@ -1588,4 +1805,3 @@ class LinearPathPanel(lf.ui.Panel):
             layout.spacing()
             color = (1.0, 0.4, 0.4, 1.0) if self._status_is_error else (0.4, 1.0, 0.4, 1.0)
             layout.text_colored(self._status_msg, color)
-        layout.pop_id()

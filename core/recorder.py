@@ -128,7 +128,7 @@ def get_default_output_path() -> str:
     videos_dir = os.path.expanduser("~/Videos")
     if not os.path.exists(videos_dir):
         videos_dir = os.path.expanduser("~")
-    return os.path.join(videos_dir, "360_record.mp4")
+    return os.path.join(videos_dir, "360_Spiral.mp4")
 
 
 def record_circular_video(
