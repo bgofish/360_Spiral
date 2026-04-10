@@ -374,7 +374,7 @@ class LinearPathPanel(Panel):
     """Panel for configuring and recording camera path videos (linear + orbit segments)."""
     
     label = "Camera Path"
-    space = "MAIN_PANEL_TAB"
+    space = lf.PanelSpace.MAIN_PANEL_TAB
     order = 30
     
     RESOLUTION_ITEMS = [
